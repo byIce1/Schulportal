@@ -1,6 +1,11 @@
 from flask import Flask
-import subprocess, json, os, html
-from datetime import datetime, date
+import subprocess
+import json
+import os
+import html
+from datetime import datetime
+import requests  # Add this line
+from bs4 import BeautifulSoup  # Add this line
 
 app = Flask(__name__)
 
@@ -34,9 +39,39 @@ def load(command):
 def esc(x):
     return html.escape(str(x) if x is not None else "")
 
+def fetch_vertretungsplan():
+    """Fetch the Vertretungsplan from DSBmobile."""
+    url = "https://dsbmobile.de/Default.aspx#/menu=0&item=0"  # Your provided link
+    try:
+        response = requests.get(url)
+
+        if response.status_code != 200:
+            print("Error fetching data")
+            return []
+
+        soup = BeautifulSoup(response.content, 'html.parser')
+        table = soup.find("table")  # Adjust the selector based on the actual structure
+
+        vertretungsplan = []
+        
+        for row in table.find_all("tr")[1:]:  # Skip the header row
+            cols = row.find_all("td")
+            if len(cols) > 0:
+                time_slot = cols[0].text.strip()  # Customize according to actual HTML tags
+                subject = cols[1].text.strip()
+                room = cols[2].text.strip()
+                vertretungsplan.append({"time_slot": time_slot, "subject": subject, "room": room})
+        
+        return vertretungsplan
+    except Exception as e:
+        print(f"Error fetching vertretungsplan: {e}")
+        return []
+
 def get_week_type():
+    """Determine if the current week is odd (U) or even (G)."""
     week_number = datetime.now().isocalendar()[1]
     return "U" if week_number % 2 != 0 else "G"
+
 
 def parse_date_str(s):
     s = str(s).strip()
@@ -151,17 +186,29 @@ def pick_two_days(days_sorted, today):
 
 @app.route("/")
 def index():
-    today_date = datetime.now().strftime("%d.%m.%Y")
-    today = date.today()
-    week_type = get_week_type()
+    """Render the main page with the timetable."""
+    today_date = datetime.now().strftime("%d.%m.%Y")  # Get today's date
+    week_type = get_week_type()  # Determine the week type (odd/even)
 
+    # Fetch tasks and substitutions
+    tasks_data = load("tasks") or {}
+    subs_data = load("substitutions")
+    tasks = tasks_data.get("tasks", []) if isinstance(tasks_data, dict) else []
+    tasks = sorted(tasks, key=lambda t: t.get("date", ""))
+
+    # Define the timetable structure based on the current week
     PLAN = {
+        # Monday
         (1, "Montag"): [{"s": "Wiwi", "r": "237", "t": "MC"}],
         (2, "Montag"): [{"s": "Wiwi", "r": "237", "t": "MC"}],
+        (3, "Montag"): [],  # Frei
         (4, "Montag"): [{"s": "E", "r": "102", "t": "BOM"}],
         (5, "Montag"): [{"s": "Ph", "r": "329", "t": "SU"}],
-        (8, "Montag"): [{"s": "D" if week_type == "U" else "M", "r": "", "t": ""}],
-        (9, "Montag"): [{"s": "D" if week_type == "U" else "M", "r": "", "t": ""}],
+        (6, "Montag"): [],  # Frei
+        (8, "Montag"): [{"s": "D" if week_type == "U" else "M", "r": "", "t": ""}],  # 8th hour
+        (9, "Montag"): [{"s": "D" if week_type == "U" else "M", "r": "", "t": ""}],  # 9th hour
+
+        # Tuesday
         (1, "Dienstag"): [{"s": "F", "r": "104", "t": "HB"}],
         (2, "Dienstag"): [{"s": "F", "r": "104", "t": "HB"}],
         (3, "Dienstag"): [{"s": "Bio", "r": "310", "t": "LW"}],
@@ -169,69 +216,78 @@ def index():
         (5, "Dienstag"): [{"s": "Rev", "r": "137", "t": "PW"}],
         (6, "Dienstag"): [{"s": "Rev", "r": "137", "t": "PW"}],
         (7, "Dienstag"): [{"s": "Rev", "r": "137", "t": "PW"}],
+        (8, "Dienstag"): [],  # Frei
+        
+        # Wednesday
         (1, "Mittwoch"): [{"s": "D", "r": "131", "t": "SI"}],
         (2, "Mittwoch"): [{"s": "D", "r": "131", "t": "SI"}],
         (3, "Mittwoch"): [{"s": "G", "r": "231", "t": "JK"}],
         (4, "Mittwoch"): [{"s": "G", "r": "134", "t": "JK"}],
         (5, "Mittwoch"): [{"s": "Ph", "r": "329", "t": "SU"}],
         (6, "Mittwoch"): [{"s": "Ph", "r": "329", "t": "SU"}],
+        (7, "Mittwoch"): [],  # Frei
         (8, "Mittwoch"): [{"s": "Spo", "r": "KS1", "t": "CV"}],
         (9, "Mittwoch"): [{"s": "Spo", "r": "KS1", "t": "CV"}],
+
+        # Thursday
         (1, "Donnerstag"): [{"s": "E", "r": "105", "t": "JK"}],
         (2, "Donnerstag"): [{"s": "E", "r": "102", "t": "BOM"}],
         (3, "Donnerstag"): [{"s": "M", "r": "134", "t": "SU"}],
         (4, "Donnerstag"): [{"s": "M", "r": "134", "t": "SU"}],
         (5, "Donnerstag"): [{"s": "Bio", "r": "310", "t": "LW"}],
         (6, "Donnerstag"): [{"s": "F", "r": "104", "t": "HB"}],
+        (7, "Donnerstag"): [],  # Frei
         (8, "Donnerstag"): [{"s": "DS", "r": "161", "t": "MJ"}],
         (9, "Donnerstag"): [{"s": "DS", "r": "161", "t": "MJ"}],
+
+        # Friday
         (1, "Freitag"): [{"s": "Wiwi", "r": "237", "t": "MC"}],
         (2, "Freitag"): [{"s": "Wiwi", "r": "237", "t": "MC"}],
         (3, "Freitag"): [{"s": "M", "r": "134", "t": "SU"}],
         (4, "Freitag"): [{"s": "D", "r": "131", "t": "SI"}],
     }
 
-    tasks_data = load("tasks") or {}
-    subs_data = load("substitutions")
-    tasks = tasks_data.get("tasks", []) if isinstance(tasks_data, dict) else []
-    tasks = sorted(tasks, key=lambda t: t.get("date", ""))
-
-    sub_days = parse_sub_days(subs_data)
-    two = pick_two_days(sub_days, today)
-
+    # Build the HTML response for the main page
     h = f"""
-    <html><head><meta name="viewport" content="width=device-width, initial-scale=1">
-    <style>
-      body.light {{ background: #f5f6fa; color: #222; }}
-      body.light table {{ background: white; }}
-      body.light th {{ background: #2f3b52; color: white; }}
-      body.light td.time {{ background: #eef1f6; }}
-      body.dark {{ background: #121212; color: #e0e0e0; }}
-      body.dark table {{ background: #1a1a1a; color: #e0e0e0; }}
-      body.dark th {{ background: #21252b; color: white; }}
-      body.dark th, body.dark td {{ border-color: #4b4e54; }}
-      body.dark td.time {{ background: #1a1a1a; }}
-      body.dark .subj, body.dark .small {{ color: #e0e0e0; }}
-      body.dark .card {{ border: 1px solid rgba(255,255,255,0.2); background: #1a1a1a; }}
-      body {{ font-family: system-ui, Arial; margin: 20px; }}
-      table {{ border-collapse: collapse; width: 100%; min-width: 750px; }}
-      th, td {{ border: 1px solid #555; padding: 8px; vertical-align: top; text-align: left; }}
-      .subj {{ font-weight: bold; }}
-      .small {{ font-size: 12px; }}
-      .card {{ border-radius: 8px; padding: 10px; margin: 8px 0; border: 1px solid #ddd; background: white; }}
-      .pill {{ display:inline-block; padding:2px 8px; border-radius:20px; font-size:12px; background:#333; color:#fff; }}
-      .today {{ background:#22c55e !important; }}
-    </style></head>
+    <html>
+    <head>
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <style>
+            body.light {{ background: #f5f6fa; color: #222; }}
+            body.light table {{ background: white; }}
+            body.light th {{ background: #2f3b52; color: white; }}
+            body.light td.time {{ background: #eef1f6; }}
+            body.dark {{ background: #121212; color: #e0e0e0; }}
+            body.dark table {{ background: #1a1a1a; color: #e0e0e0; }}
+            body.dark th {{ background: #21252b; color: white; }}
+            body.dark th, body.dark td {{ border-color: #4b4e54; }}
+            body.dark td.time {{ background: #1a1a1a; }}
+            body.dark .subj, body.dark .small {{ color: #e0e0e0; }}
+            body.dark .card {{ border: 1px solid rgba(255, 255, 255, 0.2); }}
+            body.dark .celldiv {{ border-top: none; }}
+            body {{ font-family: system-ui, Arial; margin: 20px; transition: background 0.2s; }}
+            table {{ border-collapse: collapse; width: 100%; min-width: 750px; }}
+            th, td {{ border: 1px solid #555; padding: 8px; vertical-align: top; text-align: left; }}
+            .subj {{ font-weight: bold; }}
+            .small {{ font-size: 12px; }}
+            .card {{ border-radius: 8px; padding: 10px; margin: 8px 0; border: 1px solid #ddd; }}
+        </style>
+    </head>
     <body class="dark">
-    <button id="themeBtn" onclick="toggleTheme()">Light</button>
-    <h1>Mein Schulportal</h1>
-    <p>{today_date}: Diese Woche ist eine {week_type}-Woche.</p>
-    <h2>Stundenplan</h2>
-    <div style="overflow-x:auto"><table><tr><th>Stunde</th>
+        <button id="themeBtn" onclick="toggleTheme()">☀️ Light</button>
+        <h1>Mein Schulportal</h1>
+        <p>{today_date}: Diese Woche ist eine {week_type}-Woche.</p>
+        <h2>Stundenplan</h2>
+        <div style="overflow-x:auto">
+            <table>
+                <tr><th>Stunde</th>
     """
+    
     for d in DAYS:
         h += f"<th>{d}</th>"
     h += "</tr>"
+
+    # Build rows 1-9
     for hn in range(1, 10):
         h += f"<tr><td class='time'>{hn}. Stunde<br>{TIMES[hn]}</td>"
         for d in DAYS:
@@ -244,52 +300,24 @@ def index():
                     h += f"<div><div class='subj'>{esc(e['s'])} {esc(e['r'])}</div><div class='small'>{esc(e['t'])}</div></div>"
                 h += "</td>"
         h += "</tr>"
+    
     h += "</table></div>"
-
-    # Vertretungen: immer 2 Tage mit Datum
-    h += "<h2>Vertretungen (auto, 2 Tage)</h2>"
-    if not subs_data:
-        h += "<p>Keine Vertretungsdaten. Login abgelaufen oder Wochenende. Aufgaben unten prüfen.</p>"
-    elif not sub_days:
-        h += f"<div class='card'><b>Format unbekannt.</b><br><span class='small'>Rohdaten:</span><pre>{esc(json.dumps(subs_data, indent=2, ensure_ascii=False)[:3000])}</pre></div>"
-    else:
-        # Übersicht aller gefundenen Daten zum Abgleich
-        all_dates = ", ".join([x['date_str'] for x in sub_days])
-        h += f"<p class='small'>Gefunden im Portal: {esc(all_dates)} | Heute: {esc(today_date)}</p>"
-        for day in two:
-            is_today = " today" if day["date"] == today else ""
-            label = "Heute" if day["date"] == today else ("Vergangen / Letzter" if day["date"] < today else "Nächster")
-            h += f"<div class='card'><span class='pill{is_today}'>{esc(label)} • {esc(day['date_str'])} • {esc(day['weekday'])}</span>"
-            if day["infos"]:
-                h += f"<div class='small'>Info: {esc(str(day['infos'])[:500])}</div>"
-            if not day["entries"]:
-                h += "<div>Nur Infos, keine Vertretungen.</div>"
-            else:
-                for e in day["entries"]:
-                    if not isinstance(e, dict):
-                        h += f"<div>• {esc(e)}</div>"
-                        continue
-                    # flexible Feldnamen
-                    subj = e.get("subject") or e.get("fach") or e.get("Subject") or e.get("s") or ""
-                    hour = e.get("hour") or e.get("stunde") or e.get("lesson") or ""
-                    cls = e.get("class") or e.get("klasse") or ""
-                    teacher = e.get("teacher") or e.get("lehrer") or e.get("verteter") or ""
-                    room = e.get("room") or e.get("raum") or ""
-                    typ = e.get("type") or e.get("art") or e.get("vertretungsart") or ""
-                    text = e.get("text") or e.get("bemerkung") or e.get("info") or ""
-                    h += f"<div style='margin-top:6px'>• <b>{esc(subj)} {esc(hour)} {esc(cls)}</b> <span class='small'>{esc(typ)} {esc(teacher)} {esc(room)} {esc(text)}</span></div>"
-            h += "</div>"
-
     h += f"<h2>Aufgaben ({len(tasks)})</h2>"
     for t in tasks[:20]:
         h += f"<div class='card'><b>{esc(t.get('title',''))}</b> <span class='small'>{esc(t.get('date',''))} • {esc(t.get('subject_name',''))}</span></div>"
+
+    h += "<h2>Vertretungen</h2>"
+    if not subs_data:
+        h += "<p>Keine Vertretungen.</p>"
+    else:
+        h += f"<div class='card'><pre>{esc(json.dumps(subs_data, indent=2, ensure_ascii=False)[:4000])}</pre></div>"
 
     h += """
     <script>
       function applyTheme(theme) {
         document.body.classList.remove('dark','light');
         document.body.classList.add(theme);
-        document.getElementById('themeBtn').textContent = theme === 'dark' ? 'Light' : 'Dark';
+        document.getElementById('themeBtn').textContent = theme === 'dark' ? '☀️ Light' : '🌙 Dark';
         localStorage.setItem('theme', theme);
       }
       function toggleTheme() {
